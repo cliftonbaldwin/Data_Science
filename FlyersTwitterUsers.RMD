@@ -1,0 +1,119 @@
+---
+title: "Flyers Twitter Users"
+author: "Dr. Clifton Baldwin"
+output: html_notebook
+---
+
+# Part 3 of the Philadelphia Flyers Twitter Activity
+
+The previous two posts examined the Twitter users that tweet about the Philly Flyers and looked at the tweets themselves. This analysis will be somewhat shorter than the other two in that it will just look at how the users described themselves on their Twitter account.
+
+As this is a R Notebook, all the code is in R, version 3.4.4 (2018-03-15) to be exact. 
+
+In March 2018, I scraped Twitter several times in order to gather all tweets that had the hashtags #Flyers, #FlyersNation, or #LETSGOFLYERS. The dates of the collections were March 11, March 20, and March 26, 2018. See the first of the three posts on this topic for the code I used to scrape Twitter.
+
+First, several R libraries are needed. Note, I tried to use only high quality libraries, such as those developed by the RStudio group.
+
+```{r message=FALSE}
+library(rtweet) # for users_data()
+library(tidyverse) # Instead of just ggplot2 and dplyr
+library(tidytext)  # For Twitter text manipulation
+library(wordcloud)
+library("RColorBrewer") # Because I want to print with Flyers colors!
+data(stop_words)
+```
+
+Read the three datasets into memory and combine into one master dataset. Then clean the datasets. For more information on the data preparation, see the previous posts.
+```{r}
+# Load the RData files that were saved after scraping Twitter
+load(file="rtweets20180311.RData")
+tw11 <- rstats_tweets
+users11 <- users_data(rstats_tweets)
+load(file="rtweets20180320.RData")
+tw20 <- rstats_tweets
+users20 <- users_data(rstats_tweets)
+load(file="rtweets20180326.RData")
+
+# Combine the two datasets
+tw <- bind_rows(tw11, tw20, rstats_tweets)
+users <- users_data(rstats_tweets)
+users <- bind_rows(users11, users20, users)
+rm(tw11, users11, tw20, users20, rstats_tweets)
+
+# Remove duplicates, due to overlapping dates in the individual datasets.
+tw <- unique(tw)
+users <- unique(users)
+
+# Remove users that do not (or should not) contribute value to this study.
+users <- users[!(users$user_id %in% c("19618527", "471268712", "154699499", "426029765", "19276719", "493658381", "938072969552826368", "321035743")),]
+
+# Only analyze "local" tweeters - location identified as PA, NJ, or DE
+select <- grepl("Phil", users$location, ignore.case = TRUE) | grepl("PA", users$location, ignore.case = FALSE) | grepl("NJ", users$location, ignore.case = FALSE) | grepl("DE", users$location, ignore.case = FALSE)
+
+users <- users[select,]
+rm(select)
+
+# Verified accounts include professional radio, TV, and news stations (e.g. NBC), and some celebrity names
+users <- users[!users$verified,] # Save only nonverified accounts
+
+# Now select only the tweets that belong to these user_ids
+tw <- tw[tw$user_id %in% users$user_id,]
+
+# Save only the tweets that are in English (at least for now)
+tw <- tw[tw$lang=="en",]
+
+```
+
+Let us look at the Twitter users self-reported descriptions. To do so, we need to clean up the text. By that I mean remove references to screen names, hashtags, spaces, numbers, punctuations, and urls. Because some users used non-native characters in their descriptions, we need to replace non-native characteris with native equivalents.
+
+```{r}
+clean_tweet <- gsub('\\n', '', users$description) %>% 
+  str_replace_all("http\\S+\\s*","") %>%
+  str_replace("RT @[a-z,A-Z,0-9]*: ","") %>%
+  str_replace_all("#[a-z,A-Z]*","") %>%
+  str_replace_all("@[a-z,A-Z]*","") %>%
+  str_replace_all("[0-9]","") %>%
+  str_replace_all(" "," ") %>% stringi::stri_trans_general( "latin-ascii")
+# stringi::stri_trans_general( "latin-ascii") is needed to remove non-native characters because they cause trouble in output
+
+```
+
+Now the that the text has been cleaned, we will look at the words used in tweets, and then we will consider the tweets as a whole.
+```{r, message=FALSE, warning=TRUE}
+tweets <- data_frame(text=clean_tweet) %>% unnest_tokens(word, text)
+
+tweets <- tweets %>% anti_join(stop_words)
+
+tweets %>% count(word, sort = TRUE) 
+```
+
+The fact that "flyers" is the number 2 most occuring word makes me question whether all of these users are regular fans (as opposed to agents of the Philly Flyers). I tried to eliminate professional Flyers support organizations, but maybe I missed a few.
+
+Graph the words that occur at least 100 times.
+```{r}
+tweets %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 100) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col(aes(fill = n)) +
+  scale_fill_distiller(palette="Oranges") +
+  theme(legend.position = "none") +
+  xlab("Popular Words") + ylab("Number Occurences") +  
+  labs(title="Most Popular Words in Twitter Users Description") +
+  coord_flip()
+```
+
+It is interesting that many Twitter users indicate Eagles or Sixers also. Perhaps the Flyers could increase the number of tweets to Sixers and Eagles fans in order to increase attendance at Flyers games? A future study could look at Twitter users who tweet about these other Philadelphia sports teams. Maybe there is something to be gained from analyzing their tweets? Maybe there is a commonality among Philadelphia sports fans that could be exploited to promte Flyers games?
+
+Also I find it interesting that "music" appears quite often. There might be something to explore related to music and Twitter also?
+
+Let us look at the popular words in the users' descriptions in the form of a Word Cloud. Due to the way a word cloud presents, we can see more words easier than we can with the bar graph. For this word cloud, I set the maximum number of words to display at 50 since any more causes an error of too many words to display.
+
+```{r}
+wordcloud(tweets$word, max.words = 50, random.order = FALSE)
+```
+
+Looking past the words we saw in the previous graphs, we see several references to family, such as "father," "dad," and "husband." Also we see "university," "college," "temple," "penn," and "psu." These two areas of family and college students may be additional areas that could be focused on to increase Flyers game attendance.
+
+I think I have analyzed the Twitter data as much as I can, or at least as much as I want to do. I guess it is time for me to find my next project.

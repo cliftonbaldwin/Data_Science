@@ -1,0 +1,189 @@
+---
+title: "Flyers Tweets - Tweeters"
+author: "Dr. Clifton Baldwin"
+output: html_notebook
+---
+
+Through my position at Stockton University, I have heard that the Philadelphia Flyers are looking for ways to increase ticket sales for games. I determined several data research questions related to how word can be spread for the Philadelphia Flyers. As a start, I asked the following questions:
+1. Who tweeted the most texts over the data collection time period?
+2. Of those who tweeted, who had the most followers?
+3. Of those who tweeted, Who had the most retweeted texts?
+
+I believe answering these questions will provide the Twitter users who currently promote the Flyers and which ones have the potential to influence other Twitter users. If I were looking for ways to promote the Flyers, I might try to persuade these users further to use their social media contacts.
+
+In a follow on study, I plan to ask questions related to the textual content of the texted tweets.
+
+In March 2018, I scraped Twitter several times in order to gather all tweets that had the hashtags #Flyers, #FlyersNation, or #LETSGOFLYERS. I used these hashtags based on anecdotal evidence only. Future studies may want to consider additional hashtags if there is any doubt that these hashtags are not truly representative. Twitter limits the number of tweets that can be obtained at any one time, which in part is why I scraped the data over three time periods. Although there are other workarounds, these three hashtags returned just shy of the limit of available tweets (15,000 tweets limit). Nonetheless it appears the data is sufficient for this initial study.
+
+The dates of the collections were March 11, March 20, and March 26, 2018. The following is the code I used each time.
+
+```{r, eval=FALSE, echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# load twitter library - the rtweet library is recommended now over twitteR
+library(rtweet)
+
+# Enter your Twitter credentials
+appname <- "Flyers_Data"  # name I assigned my app in Twitter
+key <- "XXXXXXXXX"  # I am not sharing my actual credentials
+secret <- "XXXXXXXXXXXXXXXXXXX" # Anyone wishing to duplicate this code can sign up for their own Twitter app - it is free
+
+# create token named "twitter_token"
+twitter_token <- create_token(
+  app = appname,
+  consumer_key = key,
+  consumer_secret = secret)
+saveRDS(twitter_token, "~/.rtweet-oauth.rds")
+
+# Scrape tweets
+rstats_tweets <- search_tweets2(q = "#Flyers OR #FlyersNation OR #LETSGOFLYERS", n = 15000, parse = TRUE, type="mixed")
+
+# Save tweets to a RData file
+save(rstats_tweets, file="rtweets2018MMDD.RData")
+
+```
+
+After all the data was scraped and saved to R dataset files, we can start working with the data. First, several R libraries are needed. Note, I tried to use only high quality libraries, such as those developed by the RStudio group.
+
+```{r}
+library(rtweet) # for users_data()
+library(tidyverse) # Instead of just ggplot2 and dplyr
+library(tidytext)  # For Twitter text manipulation
+library("RColorBrewer") # Because I want to print with Flyers colors!
+```
+
+
+Read the three datasets back into memory and combine into one master dataset.
+```{r}
+# Load the RData files that were saved after scraping Twitter
+load(file="rtweets20180311.RData")
+tw11 <- rstats_tweets
+users11 <- users_data(rstats_tweets)
+load(file="rtweets20180320.RData")
+tw20 <- rstats_tweets
+users20 <- users_data(rstats_tweets)
+load(file="rtweets20180326.RData")
+
+# Combine the two datasets
+tw <- bind_rows(tw11, tw20, rstats_tweets)
+users <- users_data(rstats_tweets)
+users <- bind_rows(users11, users20, users)
+
+# Delete the indivual datasets since we now have the master file
+rm(tw11, users11, tw20, users20, rstats_tweets)
+
+```
+
+Due to the times when the data was scraped, there are some overlapping time periods in the data. For example, the scraping run of March 20 collected some tweets that were scraped on March 11. We do not want these duplicates.
+
+```{r}
+users <- unique(users)
+```
+
+As I worked with the data, I found some users that I rather exclude from my analysis. 
+```{r}
+# user_id = "19618527" is the Philadelphia Flyers. We know the Flyers tweet for the team.
+# user_id = "471268712" is PHLFlyersNation. We know the PHLFlyers tweet for the team.
+# user_id = "154699499" is sportstalkphl We know the sportstalkphl tweet for the team.
+# user_id = "426029765" is XFINITYLive We know XFINITYLive tweet for the team.
+# user_id = "19276719" and "321035743" are not real people and directs to naughty websites
+# user_id = "493658381" is FlyersNation. We know the Flyers tweet for the team.
+# user_id = "938072969552826368" is the Philly Sports Network Flyers.
+
+users <- users[!(users$user_id %in% c("19618527", "471268712", "154699499", "426029765", "19276719", "493658381", "938072969552826368", "321035743")),]
+
+```
+
+There are many people who tweet about the Flyers that do not live locally. I do not doubt they are fans, but they are probably not attending many games (due to their geographic locations). Perhaps they should be included in further analysis, but for now I am only keeping tweets by users who identify their location as Pennsylvania, New Jersey, or Delaware. This restriction may lose a few local people who do not identify their location as local, but it is unavoidable.
+
+```{r}
+# Only analyze "local" tweeters - location identified as PA, NJ, or DE
+select <- grepl("Phil", users$location, ignore.case = TRUE) | grepl("PA", users$location, ignore.case = FALSE) | grepl("NJ", users$location, ignore.case = FALSE) | grepl("DE", users$location, ignore.case = FALSE)
+
+users <- users[select,]
+rm(select)
+
+```
+
+Twitter allows certain users to be verified. Verified accounts include professional radio, TV, and news stations (e.g. NBC), and some celebrity names (a spot check identifies the selected as broadcastsers and reporters). I am sure they are quite helpful in boosting Flyers ticket sales, but then there is no reason to keep them in the analysis. We know they already are working on boosting sales. For the purposes of this study, the verified accounts will not be considered.
+
+```{r}
+users <- users[!users$verified,] # Save only nonverified accounts
+```
+
+I am sure the remaining users include a few bots that I might have missed, but the resulting group is a start for this study. 
+
+Twitter data is formatted so that it can be saved in two datasets. The users data and the tweets data. The users data includes the following features: `r names(users)`. We need to select the tweets from only the users that remain in the users dataset.
+
+```{r}
+# There are a few tweets repeated due to overlapping dates. Save only one instance of each.
+tw <- unique(tw)
+
+# Now select only the tweets that belong to the remaining user_ids
+tw <- tw[tw$user_id %in% users$user_id,]
+
+# Save only the tweets that are in English - at this time
+tw <- tw[tw$lang=="en",]
+
+```
+
+The tweets dataset has the following features: `r names(tw)`.
+
+The collected tweets span the time from `r min(tw$created_at)` to `r max(tw$created_at)`. The resulting count of users who tweeted is `r length(unique(tw$user_id))` and `r nrow(tw)` tweets, although many are retweets.
+
+Now we can address the first data research question.
+## 1. What Twitter user had the most tweets over the selected time period?
+
+```{r, message=FALSE}
+tw %>%
+  count(user_id, sort = TRUE) %>%
+  filter(n > 60) %>%
+  inner_join(distinct(users[,c(1:3)], user_id, .keep_all = TRUE)) %>%
+#  ggplot(aes(x = reorder(name, n), y = n)) + # If I wanted to show actual names
+  ggplot(aes(x = reorder(user_id, n), y = n)) +
+  geom_col(aes(fill = n)) +
+  scale_fill_distiller(palette="Oranges") +
+  theme(legend.position = "none") +
+  xlab("User_Ids") + ylab("Number of Tweets") +
+  labs(title="Users with Most Tweets", subtitle="In Shades of Orange!") +
+  coord_flip()
+```
+
+If I was doing this to get the actual names of the Twitter users, I could have listed the user names, as they are available in the dataset, but since this exercise is only academic, I print the user_id numbers, to maintain some anonymity.
+
+Next let us look at the number of followers the users have. We could choose to see all regardless of followers. Viewing all users with their followers overloads the graph, and I do not want just a list of names. A spot check shows a large number of users have more than 20,000 followers. Specifically, `r nrow(users[users$followers_count > 20000,])` have more than 20,000 followers. If it turns out that these users are not real people, we could remove them from the users dataset or look at users with followers between 100 and 500, or whatever span we think appropriate.
+
+## 2. Of those who tweeted, who had the most followers?
+
+```{r, message=FALSE}
+unique(users[,c(1,2,3,8)]) %>%
+  filter(followers_count > 20000) %>%
+  ggplot(aes(x = reorder(user_id, followers_count), y = followers_count)) +
+  geom_col(aes(fill = followers_count)) +
+  scale_fill_distiller(palette="Oranges") +
+  theme(legend.position = "none") +
+  xlab("User_Ids") + ylab("Number of Followers") +
+  labs(title="Users who Tweeted #Flyers with Most Followers", subtitle="More than 20,000 followers") +
+  coord_flip()
+```
+
+Again, I could have printed the graph with user names instead of user ids, but I am protecting identities for this initial study.
+
+Finally, let us find the originators of tweets that were highly retweeted. It is possible that others retweeted the retweeted texts, but the following chart considers only the original authors of the tweets.
+
+## 3. Of those who tweeted, Who had the most retweeted text?
+
+```{r, message=FALSE}
+tw[!tw$is_retweet,c(3,13)]  %>%
+  group_by(user_id) %>%
+  summarise(n=max(retweet_count)) %>%
+  filter(n > 10) %>%
+  inner_join(distinct(users[,c(1,2,3,8,13)], user_id, .keep_all = TRUE)) %>%
+  ggplot(aes(x = reorder(user_id, n), y = n)) +
+  geom_col(aes(fill = n)) +
+  scale_fill_distiller(palette="Oranges") +
+  theme(legend.position = "none") +
+  xlab("User_Ids") + ylab("Retweet Count") +
+  labs(title="Users who had the Most Retweets") +
+  coord_flip()
+```
+
+This post has examined the Twitter users that tweet about the Philly Flyers. In the next post, we will look at the tweets themselves. I will post again soon.
