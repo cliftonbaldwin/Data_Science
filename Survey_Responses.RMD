@@ -1,0 +1,259 @@
+---
+title: "Survey Responses R Notebook"
+author: "Dr. Clifton Baldwin"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_notebook
+---
+
+Recently I had the task of taking a CSV file of a survey and analyzing the responses. The file was arranged so that respondents were the columns and question numbers were the rows. This format would be great if I were analyzing how each respondent did on the survey, but my task was to see how each question was answered. We wanted to see if the respondents were understanding the survey material. For example, did most respondents do well or not on question 5? Furthermore the survey questions were categorized to determine how well topics were understood. When I first read in the file using read_csv(), the column names were respondent IDs. I want to get the statistics for each row (across columns) instead of the statistics for each column, i.e. respondent.
+
+As I worked with this data, I first transposed the data frame (actually Tibble), but this manipulation caused extra work. Later I determined how to use the Tidyverse to make the process simpler. I am documenting what I did in this blog in case it can help anyone else. I am sure there are a few areas, at least, that could be improved further. Please feel free to email me with any constructive comments.
+
+Since the actual survey data is somewhat sensitive, I will use dummy data for this demonstration. While the values and associated analysis will be meaningless, I am hoping the process is somewhat enlightening. In any case, do not think you will learn anything from the actual analysis in this post, but hopefully you may learn how to handle similarly formatted data if you ever encounter it.
+
+First we need to load the appropriate libraries. Please note I try to use only well-supported libraries, in other words mostly Tidyverse libraries.
+```{r message=FALSE}
+library(tidyverse) 
+library(reshape2) # for melt()
+library(plyr) # for ddply()
+```
+
+Now we need to create some dummy data. For this demonstration, there will be 10 questions that could be scored correct or false, represented as 1 or 0. There are another 15 questions that could be scored 0 for no entry, 1 as answered but totally wrong, 2 for wrong but partially related to the question, 3 for correct yet with major issues, 4 for correct with minor issues, and 5 as fully correct. Each question can belong to one of five topic areas, indicated as Topics A, B, C, D, or E. The number of respondents is set to 30.
+
+```{r}
+set.seed(23)
+questions = as.character(1:25)
+topics = c("A","A","A","B","B","B","C","C","C","D","A","A","A","A","B","B","B","B","C","C","C","C","D","E","E")
+respondent = 1:30
+# survey1 <- data.frame(Topics = topics, Question = I(questions))
+survey <- tibble(Topics = topics, Question = questions)
+
+#sample(0:5, 15, replace = TRUE)
+for(i in respondent) {
+  survey[,paste(i, sep = "")] = c(rbinom(10,1,0.8), 
+                   sapply(rpois(15,4), function(x) ifelse(x <= 5, x, 5)))
+}
+rm(questions, topics, respondent, i) # Clean up temporary variables
+
+```
+
+
+
+The first statistic I want to see is some overall score for the survey. I want to get the average score over all the surveys. To display the mean, I need a function to compute and display the confidence interval.
+
+```{r ConfidenceInterval}
+# ds is the data vector; ci is the desired confidence (e.g. 0.95 for 95%)
+confidence <- function(ds, ci=0.95) {
+  pct = format(ci * 100.0, digits = 2)
+  ci = ((1.0 - ci) / 2.0) + ci
+  m <- mean(ds, na.rm = TRUE)
+  s <- sd(ds, na.rm = TRUE)
+  n <- length(which(!is.na(ds)))
+  error <- qt(ci, df=n-1) * s/sqrt(n)
+  left <- format(m-error, digits=3)
+  right <- format(m+error, digits=3)
+  paste(pct, "% Confidence Interval (",left, ", ", right,")", sep = "")
+  
+}
+
+```
+
+Since the data is by respondent, I want to transpose it to be by question. I will save a new dataframe (actually Tibble) by turning each question into a variable instead of each respondent as the variables.
+
+```{r}
+# Column 1 is Topics, column 2 is Question, the remaining columns are respondents
+scores <- survey[,2:32] %>% gather(Respondent, Value, -Question) %>% spread(Question, Value)
+
+```
+
+Now scores has a column named Respondent and each column variable represents a different question. I could, for example, take mean(scores$`1`) to get the average answer for question 1. That may be useful when I analyze the individual questions, but for now I want to get an overall score. However I cannot just add up all the scores corresponding to the questions (all 750 responses; 30 respondents * 25 questions) and take the average. Some questions are scored 0-1 and some 0-5. I need to normalize the scores. 
+
+I decided to convert each question to a score between 0 and 1. Of course the first ten questions are already on this scale. I need to alter Questions 11 through 25 from 0-5 to 0-1. 
+
+```{r}
+wscores <- scores # for the weighted scores
+wscores[,as.character(11:25)] <- scores[,as.character(11:25)] * 0.2
+```
+
+Now I have a data.frame (again, actually a Tibble) with columns representing the questions and every question's score is normalized to the same scale. I can use my function confidence() to get the 95% confidence interval. Since I want the overall score, I will have to use melt() from the reshape2 package. The melt function takes data across columns and stacks the values into a single column of data.
+
+```{r message=FALSE}
+confidence(melt(wscores)$value)
+```
+
+Although I have the answer I wanted, the process created two new temporary dataframes. Using the Tidyverse and its handy piping functionality, I can do the same thing in one (albeit long) piped command.
+
+```{r message=FALSE}
+bind_rows(survey[1:10,], # get the correct/incorrect responses
+  survey[11:25,] %>%  # bind to the 0-5 scored responses
+  mutate_at(.funs = funs("." = . * 0.2), .vars = 3:32) %>% # scale the 0-5 to 0-1
+  select(c(Topics, Question, ends_with("_."))) %>%  # select only the scaled responses
+  rename_at(.vars = vars(ends_with("_.")), # rename the scaled responses to original names
+          .funs = funs(sub("_.", "", .)))) %>% # I wonder if mutate has to rename variables??
+  melt(.) %>% # Convert columns to a single column of values
+  pull(value) %>% # Pass only the values
+  confidence(.) # Call my confidence interval function
+```
+
+Notice no temporary dataframes were needed! The command starts by taking the original survey data, manipulates it, and passes it to the confidence interval function.
+
+Now let us produce some graphs. Again, I will start by showing how I did it first, which uses temporary dataframes, and then I will show how I did it using the Tidyverse and pipes (actually piping is part of the magrittr package, which is included with the tidyverse package).
+
+Again, I start by transposing the original dataframe so that column variables are questions.
+
+```{r}
+scores <- survey[,2:32] %>% gather(Respondent, Value, -Question) %>% spread(Question, Value)
+```
+
+I can graph the first ten questions because they are already scaled to 0-1.
+
+```{r message=FALSE}
+ggplot(melt(scores[,c(2,13,20,21,22,23,24,25,26,3)]),
+       aes(x=value, fill = factor(value))) + 
+  geom_histogram(bins=2, show.legend = TRUE) +
+  labs(title="Histograms for Right/Wrong Survey Questions", 
+       subtitle = "Clunky Way",
+       fill = "Score") +
+  theme(legend.position = c(0.8, 0.1), 
+        legend.direction = "horizontal",
+        legend.background = element_rect(color = "black", 
+         fill = "grey90", size = 1, linetype = "solid")) +
+  facet_wrap(~variable) # create a different histogram for each question
+
+```
+
+The next 15 questions are graphed separately since they are on a different scale. To change things up a bit, I concatenate each question's topic to its name. For example, question 11 is in topic A, so the header is 11_A indicating question 11, topic A.
+```{r message=FALSE}
+written <- scores[,c(4,5,6,7,8,9,10,11,12,14,15,16,17,18,19)]
+names(written) <- paste(names(written), pull(survey[11:25,1]), sep = "_")
+
+ggplot(melt(written),aes(x=value, fill = factor(value))) + 
+  geom_histogram(bins=6, show.legend = TRUE) + 
+  labs(title="Histograms for Written Survey Questions", 
+       subtitle = "Clunky Way",
+       fill = "Score") +
+  facet_wrap(~variable)
+
+rm(written)
+
+```
+
+I could go back easily and add the topics to the first ten questions also. Since I am going to demonstrate a better way to produce these graphs, I do not think it is necessary.
+
+Using Tidyverse techniques, let us produce histograms again for each question. Using piping, we do not need temporary dataframes. To make this example a little different, let us put all the histograms on one page.
+
+```{r}
+survey[,2:32] %>% 
+   gather(Respondent, Value, -Question) %>% 
+   spread(Question, Value) %>% 
+   select(c("Respondent",1:25)) %>%
+   melt(id.vars = c("Respondent")) %>%
+   mutate(Score = factor(value)) %>%
+  ggplot(aes(x=value, fill = Score)) + 
+  geom_histogram(bins=6, show.legend = TRUE) +
+  labs(title="Histograms for Survey Questions", 
+       subtitle = "Tidyverse Way") +
+  theme(legend.position = "right", 
+        legend.direction = "vertical",
+        legend.background = element_rect(color = "black", 
+         fill = "grey90", size = 1, linetype = "solid")) +
+  facet_wrap(~variable) # create a different histogram for each question
+```
+
+
+Now let us use ddply() from the plyr package to compute error bars for the histograms. Actually we could use the output from ddply() to compute confidence intervals for each question also. 
+
+```{r}
+melt(survey[1:10,], id.vars = c("Topics", "Question")) %>%
+  ddply(c("Topics", "Question"), summarise,
+        N    = sum(!is.na(value)),
+        mean = mean(value, na.rm=TRUE),
+        sd   = sd(value, na.rm=TRUE),
+        se   = sd / sqrt(N),
+        ci   = (sd / sqrt(N)) * qt(0.975, N-1)
+  ) %>% 
+  mutate(lconfInv = mean-ci, hconfInv = mean+ci) %>% 
+  select(Topics, Question, lconfInv,hconfInv)
+```
+
+I did not clean up the output as much as I did with my custom function, but it could be done using what we have already learned plus the summarise() function.
+
+```{r message=FALSE}
+bind_rows(survey[1:10,], # get the correct/incorrect responses
+  survey[11:25,] %>%  # bind to the 0-5 scored responses
+  mutate_at(.funs = funs("." = . * 0.2), .vars = 3:32) %>% # scale the 0-5 to 0-1
+  select(c(Topics, Question, ends_with("_."))) %>%  # select only the scaled responses
+  rename_at(.vars = vars(ends_with("_.")), # rename the scaled responses to original names
+          .funs = funs(sub("_.", "", .)))) %>% # I wonder if mutate has to rename variables??
+  melt(.) %>% # Convert columns to a single column of values
+  summarise(N    = sum(!is.na(value)),
+        mean = mean(value, na.rm=TRUE),
+        sd   = sd(value, na.rm=TRUE),
+        se   = sd / sqrt(N),
+        ci   = (sd / sqrt(N)) * qt(0.975, N-1), # 95% confidence bounds
+        lconfInv = mean-ci, 
+        hconfInv = mean+ci
+  ) %>% 
+  select(lconfInv, hconfInv) # only show the confidence interval bounds
+```
+
+We can print the histograms using everything we have learned and no temporary dataframes. We do want to keep the first ten question separate from the last 15 questions. Putting them on the same graph would be somewhat misleading.
+
+```{r message=FALSE}
+melt(survey[1:10,], id.vars = c("Topics", "Question")) %>%
+  ddply(c("Topics", "Question"), summarise,
+        N    = sum(!is.na(value)),
+        mean = mean(value, na.rm=TRUE),
+        sd   = sd(value, na.rm=TRUE),
+        se   = sd / sqrt(N),
+        ci   = (sd / sqrt(N)) * qt(0.975, N-1)
+  ) %>% arrange(as.numeric(Question)) %>%
+  ggplot(aes(x=reorder(Question, as.numeric(Question)), y=mean, fill=Topics)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=ifelse(mean-ci>0,mean-ci,0), ymax=ifelse(mean+ci>1,mean+ci,1)),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) + 
+  labs(title="Histograms for Right/Wrong Survey Questions", 
+       subtitle = "Tidyverse Way",
+       x="Question Number")
+
+```
+
+And the 15 written responses in a histogram
+```{r message=FALSE}
+melt(survey[11:25,], id.vars = c("Topics", "Question")) %>%
+  ddply(c("Topics", "Question"), summarise,
+        N    = sum(!is.na(value)),
+        mean = mean(value, na.rm=TRUE),
+        sd   = sd(value, na.rm=TRUE),
+        se   = sd / sqrt(N),
+        ci   = (sd / sqrt(N)) * qt(0.975, N-1)
+  ) %>% arrange(as.numeric(Question)) %>%
+  ggplot(aes(x=reorder(Question, as.numeric(Question)), y=mean, fill=Topics)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=ifelse(mean-ci>0,mean-ci,0), ymax=mean+ci),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  labs(title="Histograms for Written Survey Questions", 
+       subtitle = "Tidyverse Way",
+       x="Question Number")
+```
+
+We have looked at the survey responses overall and for each question, but we have not considered the responses for each topic. This last histogram will normalize questions 11-25 so that all 25 questions can be considered together and each bar will represent a topic.
+```{r message=FALSE}
+bind_rows(survey[1:10,], # get the correct/incorrect responses
+  survey[11:25,] %>%  # bind to the 0-5 scored responses
+  mutate_at(.funs = funs("." = . * 0.2), .vars = 3:32) %>% # scale the 0-5 to 0-1
+  select(c(Topics, Question, ends_with("_."))) %>%  # select only the scaled responses
+  rename_at(.vars = vars(ends_with("_.")), # rename the scaled responses to original names
+          .funs = funs(sub("_.", "", .)))) %>% # I wonder if mutate has to rename variables??
+  melt(.) %>% # melt the dataframe into one variable called value
+  ggplot(aes(x=value, fill = factor(value))) + # Graph value
+    geom_histogram(bins=6, show.legend = TRUE) +  # as a histogram
+    labs(title="Histogram for Statistics Questions", 
+         subtitle = "Using the Tidyverse",
+         fill = "Score", x = "Score") +
+    facet_grid(. ~ Topics) # make a different histogram for each Topic
+```
+
+This demonstration uses many functions available in the Tidyverse. Once the R coder gets familiar with them, it is not difficult to pipe them together to do really good analysis even when the original data is not in the desired format.
