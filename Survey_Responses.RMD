@@ -37,8 +37,6 @@ rm(questions, topics, respondent, i) # Clean up temporary variables
 
 ```
 
-
-
 The first statistic I want to see is some overall score for the survey. I want to get the average score over all the surveys. To display the mean, I need a function to compute and display the confidence interval.
 
 ```{r ConfidenceInterval}
